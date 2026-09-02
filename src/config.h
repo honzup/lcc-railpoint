@@ -1,6 +1,7 @@
 #ifndef _LCC_RAILPOINT_CONFIG_H_
 #define _LCC_RAILPOINT_CONFIG_H_
 
+#include "openlcb/ConfiguredConsumer.hxx"
 #include "openlcb/ConfigRepresentation.hxx"
 #include "openlcb/MemoryConfig.hxx"
 
@@ -19,12 +20,42 @@ extern const SimpleNodeStaticValues SNIP_STATIC_DATA = {
 
 /// Modify this value every time the EEPROM needs to be cleared on the node
 /// after an update.
-static constexpr uint16_t CANONICAL_VERSION = 0x1000;
+/// 0x1900 = Task 2: added PointConfig (2-entry RepeatedGroup) -- layout
+///          change (new entries appended after the wifi group) -> bump.
+static constexpr uint16_t CANONICAL_VERSION = 0x1900;
+
+constexpr uint8_t NUM_POINTS = 2;
+
+/// One turnout/point: the OpenLCB event pair that commands it, plus the
+/// timing/orientation config the (not-yet-built) actuator will use. Task 2
+/// scope: consuming event_thrown/event_closed only sets commanded state and
+/// logs it -- no GPIO/actuator driven yet (that's Task 3).
+CDI_GROUP(PointConfig);
+CDI_GROUP_ENTRY(event_closed, EventConfigEntry, Name("Event Closed"),
+    Description("Command this point CLOSED."));
+CDI_GROUP_ENTRY(event_thrown, EventConfigEntry, Name("Event Thrown"),
+    Description("Command this point THROWN."));
+CDI_GROUP_ENTRY(throwMs, Uint16ConfigEntry, Default(2000), Min(200), Max(10000),
+    Name("Throw time (ms)"),
+    Description("How long the actuator takes to move end-to-end."));
+CDI_GROUP_ENTRY(invert, Uint8ConfigEntry, Default(0), Name("Invert"),
+    Description("0 = normal, 1 = swap which physical direction is Closed/Thrown."),
+    MapValues(
+        "<relation><property>0</property><value>Normal</value></relation>"
+        "<relation><property>1</property><value>Invert</value></relation>"));
+CDI_GROUP_ENTRY(description, StringConfigEntry<16>, Name("Description"),
+    Description("User name."));
+CDI_GROUP_END();
+
+using AllPoints = RepeatedGroup<PointConfig, NUM_POINTS>;
 
 /// Main segment, laid out at origin 128 to leave space for ACDI user data.
+/// internal_config/wifi stay first and in order so the Esp32WiFiManager
+/// uplink's config offsets are unaffected -- turnouts is appended after.
 CDI_GROUP(WifiNodeSegment, Segment(MemoryConfigDefs::SPACE_CONFIG), Offset(128));
 CDI_GROUP_ENTRY(internal_config, InternalConfigData);
 CDI_GROUP_ENTRY(wifi, WiFiConfiguration, Name("WiFi Configuration"));
+CDI_GROUP_ENTRY(turnouts, AllPoints, Name("Points"), RepName("Point"));
 CDI_GROUP_END();
 
 /// The main structure of the CDI, referenced from main.cpp as ConfigDef.

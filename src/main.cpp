@@ -1,7 +1,9 @@
 /// LCC RailPoint (Fleet #4) -- WiFi-transport OpenLCB node for the
 /// ESP32-S3 (XIAO S3). Connects as a GridConnect-TCP uplink client to the
 /// JMRI hub. No CAN/TWAI. Task 1 scope: WiFi provisioning + uplink join
-/// only -- no turnout/producer/consumer logic yet.
+/// only. Task 2 scope: PointChannel consumers (2 points) -- thrown/closed
+/// events set commanded state and are LOGGED; no actuator hardware yet
+/// (that's Task 3).
 ///
 /// WiFi credentials are NOT hardcoded: a tzapu WiFiManager captive portal
 /// ("lcc-railpoint-Setup") provisions them on first boot / when unset, and
@@ -17,8 +19,10 @@
 #include <WiFiManager.h> // tzapu/WiFiManager -- captive-portal provisioning
 #include <esp_netif.h>
 #include <esp_wifi_default.h>
+#include <unistd.h> // fsync -- config persistence to flash
 
 #include <OpenMRNLite.h>
+#include "openlcb/ConfiguredConsumer.hxx"
 
 #define USE_WIFI
 
@@ -49,6 +53,119 @@ char g_pass[65] = {0};
 /// here. Esp32WiFiManager::CONN_MODE_UPLINK_BIT is private; the connection
 /// mode arg is simply omitted since its default is already uplink-only.
 Esp32WiFiManager *wifi_mgr = nullptr;
+
+// ============ DURABLE config persistence: fsync-after-write (debounced) =======
+// Ported VERBATIM (pattern) from fleet node #3 (lcc-servo-node/src/main.cpp) --
+// see that file's header comment for the full root-cause writeup. Short
+// version: ESP32 SPIFFS keeps file writes in cache and only commits to flash
+// on fsync/close, so we fsync ONLY after a config WRITE (never a read),
+// debounced, on the loop() thread -- and once flushed, trigger_update()
+// re-applies config live so a JMRI edit (event/throwMs/invert/description)
+// takes effect without a reboot.
+static constexpr uint32_t CFG_SYNC_DEBOUNCE_MS = 350;
+static int                s_cfg_fd       = -1;
+static volatile bool      s_cfg_dirty    = false;
+static volatile uint32_t  s_cfg_dirty_ms = 0;
+
+/// One turnout/point: a config-driven consumer whose thrown/closed events
+/// set a commanded state. Adapted from fleet node #3's TurnoutChannel, minus
+/// the PCA9685/MCP23017 servo+frog drive -- Task 2 scope is consume + LOG
+/// only, no actuator hardware yet (Task 3).
+class PointChannel : public DefaultConfigUpdateListener
+{
+public:
+    PointChannel(openlcb::Node *node, const openlcb::PointConfig &cfg, int idx)
+        : node_(node)
+        , gpio_(this)
+        , impl_(node, 0, 0, &gpio_)
+        , consumer_(&impl_)
+        , cfg_(cfg)
+        , idx_(idx)
+    {
+    }
+
+    UpdateAction apply_configuration(int fd, bool initial_load,
+        BarrierNotifiable *done) override
+    {
+        AutoNotify n(done);
+        fd_ = fd; // retained for parity with node #3 (future save/calibration API)
+        throw_ms_ = cfg_.throwMs().read(fd);
+        invert_ = cfg_.invert().read(fd) != 0;
+        snprintf(name_, sizeof(name_), "%s", cfg_.description().read(fd).c_str());
+
+        openlcb::EventId thrown = cfg_.event_thrown().read(fd);
+        openlcb::EventId closed = cfg_.event_closed().read(fd);
+        if (thrown == impl_.event_on() && closed == impl_.event_off())
+            return UPDATED; // only throwMs/invert/description (or nothing) changed
+        // (Re)register the consumer for the new events, keeping the same gpio_.
+        consumer_.~BitEventConsumer();
+        impl_.openlcb::GPIOBit::~GPIOBit();
+        new (&impl_) openlcb::GPIOBit(node_, thrown, closed, &gpio_);
+        new (&consumer_) openlcb::BitEventConsumer(&impl_);
+        return REINIT_NEEDED;
+    }
+
+    void factory_reset(int fd) override
+    {
+        CDI_FACTORY_RESET(cfg_.throwMs);
+        CDI_FACTORY_RESET(cfg_.invert);
+        cfg_.description().write(fd, "");
+    }
+
+    /// Loop-thread tick (called every ~30ms, same cadence as node #3's servo
+    /// sweep). Task 2: no actuator yet -- just log the commanded intent.
+    void update(uint32_t /*now*/)
+    {
+        if (restart_)
+        {
+            restart_ = false;
+            LOG(INFO, "[FY%d] -> %s", idx_, commanded_thrown_ ? "THROWN" : "CLOSED");
+        }
+    }
+
+private:
+    /// A Gpio that routes writes into the owning channel's commanded state
+    /// (instead of a physical pin). SET = commanded THROWN, CLR = commanded
+    /// CLOSED.
+    class CmdGpio : public Gpio
+    {
+    public:
+        explicit CmdGpio(PointChannel *o) : owner_(o) {}
+        void write(Value v) const override
+        {
+            if (v == SET) owner_->commanded_thrown_ = true;
+            else          owner_->commanded_thrown_ = false;
+            owner_->restart_ = true;
+        }
+        Value read() const override { return owner_->commanded_thrown_ ? SET : CLR; }
+        void set() const override { write(SET); }
+        void clr() const override { write(CLR); }
+        void set_direction(Direction) const override {}
+        Direction direction() const override { return Direction::DOUTPUT; }
+
+    private:
+        PointChannel *owner_;
+    };
+
+    openlcb::Node *node_;
+    CmdGpio gpio_;
+    openlcb::GPIOBit impl_;
+    openlcb::BitEventConsumer consumer_;
+    const openlcb::PointConfig cfg_;
+    const int idx_;
+
+    uint16_t throw_ms_ = 2000;
+    bool     invert_ = false;
+    char     name_[17] = ""; // per-channel Description (StringConfigEntry<16>)
+
+    volatile bool commanded_thrown_ = false; // written from executor (event handler)
+    volatile bool restart_          = false; // intent changed, log it on next tick
+    int      fd_ = -1;                       // config fd, retained (parity w/ node #3)
+};
+
+#define PCH(i) PointChannel(openmrn.stack()->node(), cfg.seg().turnouts().entry<i>(), i)
+PointChannel point_channels[] = { PCH(0), PCH(1) };
+#undef PCH
 
 class FactoryResetHelper : public DefaultConfigUpdateListener
 {
@@ -94,6 +211,25 @@ extern const size_t CONFIG_FILE_SIZE = cfg.seg().size() + cfg.seg().offset();
 // as general configuration data.
 extern const char *const SNIP_DYNAMIC_FILENAME = CONFIG_FILENAME;
 } // namespace openlcb
+
+/// Overrides the default SPACE_CONFIG memory space so every config WRITE
+/// (never a read) arms the debounced fsync above. Ported VERBATIM (pattern)
+/// from fleet node #3.
+class SyncedFileMemorySpace : public openlcb::FileMemorySpace
+{
+public:
+    SyncedFileMemorySpace(int fd, address_t len)
+        : openlcb::FileMemorySpace(fd, len) {}
+
+    size_t write(address_t dest, const uint8_t *data, size_t len,
+                 errorcode_t *error, Notifiable *again) override
+    {
+        size_t w = openlcb::FileMemorySpace::write(dest, data, len, error, again);
+        s_cfg_dirty_ms = millis(); // arm/re-arm the debounce (write path only)
+        s_cfg_dirty    = true;
+        return w;
+    }
+};
 
 void setup()
 {
@@ -189,12 +325,27 @@ void setup()
     openmrn.create_config_descriptor_xml(cfg, openlcb::CDI_FILENAME);
 
     // Create the default internal configuration file.
-    openmrn.stack()->create_config_file_if_needed(cfg.seg().internal_config(),
+    s_cfg_fd = openmrn.stack()->create_config_file_if_needed(
+        cfg.seg().internal_config(),
         openlcb::CANONICAL_VERSION, openlcb::CONFIG_FILE_SIZE);
 
     // Start the OpenMRN stack; Esp32WiFiManager brings up WiFi + the
     // uplink connection from here.
     openmrn.begin();
+
+    // Override the default SPACE_CONFIG memory space with one that fsyncs
+    // after writes (see SyncedFileMemorySpace above), enabling live re-apply
+    // of point config edits (event/throwMs/invert/description) via
+    // ConfigUpdateService::instance()->trigger_update() in loop().
+    if (s_cfg_fd >= 0)
+    {
+        static SyncedFileMemorySpace synced_cfg(
+            s_cfg_fd, openlcb::CONFIG_FILE_SIZE);
+        openmrn.stack()->memory_config_handler()->registry()->insert(
+            openmrn.stack()->node(),
+            openlcb::MemoryConfigDefs::SPACE_CONFIG, &synced_cfg);
+    }
+
     openmrn.start_executor_thread();
 }
 
@@ -243,4 +394,32 @@ void loop()
 
     // Call the OpenMRN executor as often as possible from loop().
     openmrn.loop();
+
+    // Point-channel tick: every ~30ms (same cadence as node #3's servo
+    // sweep). Task 2: logs a commanded thrown/closed intent; no actuator yet.
+    static uint32_t s_last_tick = 0;
+    uint32_t now = millis();
+    if ((uint32_t)(now - s_last_tick) >= 30)
+    {
+        s_last_tick = now;
+        for (auto &p : point_channels) p.update(now);
+    }
+
+    // Debounced config fsync: flush to flash once writes have been idle for
+    // CFG_SYNC_DEBOUNCE_MS. Armed only by SyncedFileMemorySpace::write(), so
+    // a read never triggers it. Runs here (loop thread), not on the executor.
+    if (s_cfg_dirty &&
+        (uint32_t)(millis() - s_cfg_dirty_ms) >= CFG_SYNC_DEBOUNCE_MS)
+    {
+        uint32_t armed = s_cfg_dirty_ms;
+        if (s_cfg_fd >= 0) fsync(s_cfg_fd);
+        // Clear only if no write landed during the fsync; else re-sync next pass.
+        if (s_cfg_dirty_ms == armed)
+        {
+            s_cfg_dirty = false;
+            // Config now committed to flash -> re-apply it LIVE so point
+            // edits take effect immediately instead of only at next boot.
+            ConfigUpdateService::instance()->trigger_update();
+        }
+    }
 }
