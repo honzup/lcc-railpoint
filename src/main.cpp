@@ -2,8 +2,9 @@
 /// ESP32-S3 (XIAO S3). Connects as a GridConnect-TCP uplink client to the
 /// JMRI hub. No CAN/TWAI. Task 1 scope: WiFi provisioning + uplink join
 /// only. Task 2 scope: PointChannel consumers (2 points) -- thrown/closed
-/// events set commanded state and are LOGGED; no actuator hardware yet
-/// (that's Task 3).
+/// events set commanded state and are LOGGED. Task 3 scope: each point
+/// drives its own DRV8871 H-bridge (see drv8871.h) for throwMs then
+/// coasts, per the proven MQTT railpoint's startThrow/coast logic.
 ///
 /// WiFi credentials are NOT hardcoded: a tzapu WiFiManager captive portal
 /// ("lcc-railpoint-Setup") provisions them on first boot / when unset, and
@@ -27,6 +28,17 @@
 #define USE_WIFI
 
 #include "config.h"
+#include "drv8871.h"
+
+/// Per-point DRV8871 IN1/IN2 pins (XIAO-S3 Arduino pin macros). FY1 on
+/// D1/D3 matches the proven MQTT railpoint's wiring (see
+/// ~/railpoint/railpoint/railpoint.ino). FY2's D4/D5 is a clean, unused
+/// XIAO-S3 pair chosen as a default -- it MUST be updated here if FY2's
+/// DRV8871 is actually wired to different pins.
+static constexpr uint8_t POINT_PINS[openlcb::NUM_POINTS][2] = {
+    {D1, D3}, // FY1
+    {D4, D5}, // FY2
+};
 
 /// Node id for this node, unique on the network (Fleet #4).
 static constexpr uint64_t NODE_ID = UINT64_C(0x0304001E4804);
@@ -68,9 +80,11 @@ static volatile bool      s_cfg_dirty    = false;
 static volatile uint32_t  s_cfg_dirty_ms = 0;
 
 /// One turnout/point: a config-driven consumer whose thrown/closed events
-/// set a commanded state. Adapted from fleet node #3's TurnoutChannel, minus
-/// the PCA9685/MCP23017 servo+frog drive -- Task 2 scope is consume + LOG
-/// only, no actuator hardware yet (Task 3).
+/// set a commanded state, which drives a DRV8871 H-bridge (see drv8871.h)
+/// for throw_ms_ then coasts -- the MP1's own end-stop cuts motor current
+/// at travel end. Adapted from fleet node #3's TurnoutChannel, minus the
+/// PCA9685/MCP23017 servo+frog drive (frog here is mechanical, via the MP1
+/// aux SPDT -- no GPIO).
 class PointChannel : public DefaultConfigUpdateListener
 {
 public:
@@ -113,13 +127,35 @@ public:
     }
 
     /// Loop-thread tick (called every ~30ms, same cadence as node #3's servo
-    /// sweep). Task 2: no actuator yet -- just log the commanded intent.
-    void update(uint32_t /*now*/)
+    /// sweep). Drives the DRV8871 pulse for this point; all GPIO writes
+    /// happen here, never on the executor/event-handler thread.
+    void update(uint32_t now)
     {
+        if (!pins_ready_)
+        {
+            drv8871_init(POINT_PINS[idx_][0], POINT_PINS[idx_][1]);
+            pins_ready_ = true;
+        }
+
         if (restart_)
         {
             restart_ = false;
-            LOG(INFO, "[FY%d] -> %s", idx_, commanded_thrown_ ? "THROWN" : "CLOSED");
+            // Mirror the proven MQTT railpoint's `bool in1high = closed ^
+            // invert;` (closed (uninverted) -> IN1 high). Here "closed" is
+            // !commanded_thrown_, so in1high = !commanded_thrown_ ^ invert_.
+            bool in1high = (!commanded_thrown_) ^ invert_;
+            drv8871_drive(POINT_PINS[idx_][0], POINT_PINS[idx_][1], in1high);
+            pulsing_ = true;
+            pulse_start_ = now;
+            LOG(INFO, "[FY%d] -> %s (throwMs=%u invert=%d)", idx_,
+                commanded_thrown_ ? "THROWN" : "CLOSED", throw_ms_, invert_);
+        }
+
+        if (pulsing_ && (uint32_t)(now - pulse_start_) >= throw_ms_)
+        {
+            drv8871_coast(POINT_PINS[idx_][0], POINT_PINS[idx_][1]);
+            pulsing_ = false;
+            LOG(INFO, "[FY%d] settled/coast", idx_);
         }
     }
 
@@ -159,8 +195,13 @@ private:
     char     name_[17] = ""; // per-channel Description (StringConfigEntry<16>)
 
     volatile bool commanded_thrown_ = false; // written from executor (event handler)
-    volatile bool restart_          = false; // intent changed, log it on next tick
+    volatile bool restart_          = false; // intent changed, (re)start the drive pulse
     int      fd_ = -1;                       // config fd, retained (parity w/ node #3)
+
+    // Loop-thread-only drive state (never touched off update()).
+    bool     pins_ready_  = false; // drv8871_init() done (lazy -- global ctor runs pre-Arduino-init)
+    bool     pulsing_     = false;
+    uint32_t pulse_start_ = 0;
 };
 
 #define PCH(i) PointChannel(openmrn.stack()->node(), cfg.seg().turnouts().entry<i>(), i)
@@ -396,7 +437,7 @@ void loop()
     openmrn.loop();
 
     // Point-channel tick: every ~30ms (same cadence as node #3's servo
-    // sweep). Task 2: logs a commanded thrown/closed intent; no actuator yet.
+    // sweep). Drives each point's DRV8871 pulse and coasts it after throwMs.
     static uint32_t s_last_tick = 0;
     uint32_t now = millis();
     if ((uint32_t)(now - s_last_tick) >= 30)
