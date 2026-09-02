@@ -14,6 +14,8 @@
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <WiFiManager.h> // tzapu/WiFiManager -- captive-portal provisioning
+#include <esp_netif.h>
+#include <esp_wifi_default.h>
 
 #include <OpenMRNLite.h>
 
@@ -132,18 +134,31 @@ void setup()
     // tzapu's autoConnect() leaves arduino-esp32's WiFi stack initialised
     // (and, if provisioned, connected). Esp32WiFiManager's own bring-up
     // unconditionally calls esp_wifi_init() -- which ESP_ERROR_CHECK-aborts
-    // if the driver is already initialised -- and creates its own default
-    // STA/AP esp_netifs. WiFi.disconnect(true, false) drops the connection
-    // *and* runs arduino-esp32's internal esp_wifi_deinit() (mode ->
-    // WIFI_OFF), clearing that guard so Esp32WiFiManager's own
-    // esp_wifi_init() succeeds; `false` (eraseap) keeps the creds tzapu
-    // saved to NVS untouched. Residual, unverified-until-flashed risk:
-    // arduino-esp32 does not destroy its default netif objects on deinit,
-    // so Esp32WiFiManager creating its own afterwards may leave one
-    // orphaned extra netif -- watch the boot log for esp_netif
-    // errors/warnings when this is first flashed.
+    // if the driver is already initialised -- and unconditionally calls
+    // esp_netif_create_default_wifi_sta()/_ap(), which HARD-ASSERTS
+    // (esp_netif_new: "duplicate key") if a netif with the same if_key
+    // already exists. Confirmed on hardware: tzapu's autoConnect() already
+    // created the default "WIFI_STA_DEF"/"WIFI_AP_DEF" netifs (via
+    // arduino-esp32's WiFiGenericClass::mode() -> wifiLowLevelInit()), so
+    // Esp32WiFiManager's own create call crashed with that exact assert
+    // and boot-looped. WiFi.disconnect(true, false) deinits the esp_wifi
+    // DRIVER (mode -> WIFI_OFF -> esp_wifi_deinit()), clearing the
+    // esp_wifi_init() guard; `false` (eraseap) keeps the creds tzapu saved
+    // to NVS untouched. It does NOT touch the netif objects -- arduino-esp32
+    // never destroys those on deinit -- so they must be destroyed
+    // explicitly here, before Esp32WiFiManager re-creates them.
     LOG(INFO, "[prov] handing off WiFi driver to Esp32WiFiManager");
     WiFi.disconnect(true, false);
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif)
+    {
+        esp_netif_destroy_default_wifi(sta_netif);
+    }
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif)
+    {
+        esp_netif_destroy_default_wifi(ap_netif);
+    }
 
     // Esp32WiFiManager's constructor copies station_ssid/station_password
     // into its own std::string members immediately (by value, at
