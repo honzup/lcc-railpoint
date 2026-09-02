@@ -21,6 +21,7 @@
 #include <esp_netif.h>
 #include <esp_wifi_default.h>
 #include <unistd.h> // fsync -- config persistence to flash
+#include <Preferences.h> // NVS -- last commanded position, survives power-cut
 
 #include <OpenMRNLite.h>
 #include "openlcb/ConfiguredConsumer.hxx"
@@ -66,6 +67,11 @@ char g_pass[65] = {0};
 /// mode arg is simply omitted since its default is already uplink-only.
 Esp32WiFiManager *wifi_mgr = nullptr;
 
+/// Last-commanded-position store (NVS), keyed per point ("t%d"). Opened in
+/// setup() before openmrn.begin() so it's ready when apply_configuration()
+/// restores on initial_load. Ported VERBATIM (pattern) from fleet node #3.
+Preferences prefs;
+
 // ============ DURABLE config persistence: fsync-after-write (debounced) =======
 // Ported VERBATIM (pattern) from fleet node #3 (lcc-servo-node/src/main.cpp) --
 // see that file's header comment for the full root-cause writeup. Short
@@ -106,6 +112,20 @@ public:
         throw_ms_ = cfg_.throwMs().read(fd);
         invert_ = cfg_.invert().read(fd) != 0;
         snprintf(name_, sizeof(name_), "%s", cfg_.description().read(fd).c_str());
+
+        if (initial_load)
+        {
+            // Restore last commanded position from NVS (power-cut recovery).
+            // Reading NVS here (executor thread) is fine -- it's not GPIO;
+            // the DRV8871 itself is only ever driven from update() below, via
+            // restart_ (same rule as everything else in this class). Ported
+            // VERBATIM (pattern) from fleet node #3.
+            char key[8];
+            snprintf(key, sizeof(key), "t%d", idx_);
+            commanded_thrown_ = prefs.getUChar(key, 0) != 0;
+            persisted_thrown_ = commanded_thrown_; // don't immediately re-write it
+            restart_ = true; // drive to the restored position on the next tick
+        }
 
         openlcb::EventId thrown = cfg_.event_thrown().read(fd);
         openlcb::EventId closed = cfg_.event_closed().read(fd);
@@ -156,7 +176,30 @@ public:
             drv8871_coast(POINT_PINS[idx_][0], POINT_PINS[idx_][1]);
             pulsing_ = false;
             LOG(INFO, "[FY%d] settled/coast", idx_);
+            // Persist the commanded position to NVS, only on real change --
+            // stops a re-apply (trigger_update() after a config fsync) from
+            // looping, and limits flash writes to actual position changes.
+            if (commanded_thrown_ != persisted_thrown_)
+            {
+                char k[8];
+                snprintf(k, sizeof(k), "t%d", idx_);
+                prefs.putUChar(k, commanded_thrown_ ? 1 : 0);
+                persisted_thrown_ = commanded_thrown_;
+            }
         }
+    }
+
+    /// Recover this point's state from the bus after boot: emit an Identify
+    /// Producers query so the ProducerIdentified(Valid/Invalid) reply flows
+    /// back through consumer_ -> GPIOBit::set_state -> CmdGpio ->
+    /// commanded_thrown_, setting the state deterministically -- overriding
+    /// the NVS-restored fallback with JMRI's definite state. Asynchronous:
+    /// `done` fires once the query is enqueued. Ported VERBATIM from fleet
+    /// node #3's TurnoutChannel::query_state.
+    void query_state(openlcb::WriteHelper *w, BarrierNotifiable *done)
+    {
+        if (impl_.event_on() == 0 && impl_.event_off() == 0) { done->notify(); return; }
+        consumer_.SendQuery(w, done); // emits MTI_PRODUCER_IDENTIFY for event_on
     }
 
 private:
@@ -195,6 +238,7 @@ private:
     char     name_[17] = ""; // per-channel Description (StringConfigEntry<16>)
 
     volatile bool commanded_thrown_ = false; // written from executor (event handler)
+    bool     persisted_thrown_ = false;      // last value written to NVS (loop-only)
     volatile bool restart_          = false; // intent changed, (re)start the drive pulse
     int      fd_ = -1;                       // config fd, retained (parity w/ node #3)
 
@@ -362,6 +406,11 @@ void setup()
         }
     }
 
+    // Open the NVS store BEFORE openmrn.begin() -- PointChannel::
+    // apply_configuration(initial_load) restores from it, and begin() is
+    // where that first fires.
+    prefs.begin("railpoint", false);
+
     // Create the CDI.xml dynamically.
     openmrn.create_config_descriptor_xml(cfg, openlcb::CDI_FILENAME);
 
@@ -389,6 +438,37 @@ void setup()
 
     openmrn.start_executor_thread();
 }
+
+// ---- Producer-state recovery sweep (bounded retry) ----------------------------
+// After the node initialises, query each configured point's producer so the
+// ProducerIdentified reply sets commanded_thrown_ deterministically (see
+// PointChannel::query_state). SendQuery is async and a single WriteHelper can't
+// be reused concurrently, so the points are serialised: fire point i+1 only
+// after point i's query is enqueued. s_query_done (executor ctx) clears the
+// busy flag; loop() advances the index. Ported VERBATIM from fleet node #3.
+//
+// ProducerIdentified replies are best-effort -- on any given boot JMRI may not
+// answer one point in time, leaving that point at its NVS-restored position
+// until toggled. So the whole sweep runs QUERY_PASSES times, each starting
+// QUERY_RETRY_GAP_MS after the previous one finishes; a reply missed on one
+// pass is picked up on a later one. Re-querying a point that already
+// recovered is idempotent, so a full re-sweep is safe.
+// ponytail: bounded boot-time retry, NOT a periodic poll -- parks permanently
+// after QUERY_PASSES so it never floods the bus. Linear index + busy flag +
+// pass counter in loop(), one shared WriteHelper -- no StateFlow. Ceiling:
+// strictly one query in flight, passes never overlap; upgrade to a StateFlow
+// only if the sweep ever needs to overlap other outbound traffic.
+static constexpr int      QUERY_PASSES       = 3;      // total recovery sweeps per boot
+static constexpr uint32_t QUERY_RETRY_GAP_MS = 3000;   // gap after a sweep before the next
+static openlcb::WriteHelper s_query_wh;
+static BarrierNotifiable     s_query_bn;              // wraps s_query_done per query
+static volatile bool         s_query_busy = false;    // query in flight (set/cleared cross-thread)
+static int                   s_query_idx  = 0;        // next point; -1 between/after passes
+static int                   s_query_pass = 0;        // sweeps completed; stops at QUERY_PASSES
+static uint32_t              s_query_next_pass_ms = 0; // earliest start of the next sweep
+static struct QueryDone : public Notifiable {
+    void notify() override { s_query_busy = false; }
+} s_query_done;
 
 void loop()
 {
@@ -435,6 +515,30 @@ void loop()
 
     // Call the OpenMRN executor as often as possible from loop().
     openmrn.loop();
+
+    // Producer-state recovery: one query per configured point, serialised,
+    // repeated for QUERY_PASSES bounded passes (see block comment above).
+    if (s_query_pass < QUERY_PASSES && !s_query_busy &&
+        openmrn.stack()->node()->is_initialized())
+    {
+        if (s_query_idx < 0)   // between passes -- wait out the retry gap, then re-arm
+        {
+            if ((int32_t)(millis() - s_query_next_pass_ms) >= 0) s_query_idx = 0;
+        }
+        else if (s_query_idx >= (int)ARRAYSIZE(point_channels))
+        {
+            // one full sweep done -- schedule the next pass, or park after the last.
+            s_query_idx = -1;
+            s_query_next_pass_ms = millis() + QUERY_RETRY_GAP_MS;
+            ++s_query_pass;
+        }
+        else
+        {
+            s_query_busy = true;   // cleared by s_query_done when the query lands
+            point_channels[s_query_idx++].query_state(
+                &s_query_wh, s_query_bn.reset(&s_query_done));
+        }
+    }
 
     // Point-channel tick: every ~30ms (same cadence as node #3's servo
     // sweep). Drives each point's DRV8871 pulse and coasts it after throwMs.
