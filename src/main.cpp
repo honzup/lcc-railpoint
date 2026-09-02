@@ -11,6 +11,7 @@
 /// this task exists to de-risk.
 
 #include <Arduino.h>
+#include <ArduinoOTA.h>
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <WiFiManager.h> // tzapu/WiFiManager -- captive-portal provisioning
@@ -199,6 +200,47 @@ void setup()
 
 void loop()
 {
+    // ---- ArduinoOTA (WiFi flashing) ------------------------------------
+    // Esp32WiFiManager already owns WiFi + its own mDNS (see boot-log
+    // "[mDNS] Initializing mDNS system" from OpenMRNLite). ArduinoOTA's
+    // begin() would normally call MDNS.begin() itself too -- a second
+    // mDNS init that risks fighting Esp32WiFiManager's. Fix:
+    // setMdnsEnabled(false) so ArduinoOTA.begin() never touches mDNS at
+    // all (verified in arduino-esp32's ArduinoOTA.cpp: MDNS.begin()/.end()
+    // are both gated behind `if (_mdnsEnabled)`). OTA is then reached by
+    // IP:3232 instead of mDNS hostname discovery -- espota supports a raw
+    // --host-ip target, which is how the controller invokes it (see
+    // platformio.ini env:xiao_s3_wifi_ota).
+    //
+    // WiFi comes up asynchronously (Esp32WiFiManager connects after
+    // openmrn.begin() above), so ArduinoOTA.begin() can't run in setup();
+    // start it here, once, as soon as the connection is up.
+    static bool ota_started = false;
+    if (!ota_started && WiFi.status() == WL_CONNECTED)
+    {
+        ArduinoOTA.setHostname("lcc-railpoint");
+        ArduinoOTA.setMdnsEnabled(false);
+        // ponytail: no OTA password -- bench-only node on a trusted LAN.
+        // Add ArduinoOTA.setPassword()/setPasswordHash() before this node
+        // (or its network) is any less trusted.
+        ArduinoOTA.onStart([]() {
+            LOG(INFO, "[OTA] start");
+        });
+        ArduinoOTA.onEnd([]() {
+            LOG(INFO, "[OTA] end, rebooting");
+        });
+        ArduinoOTA.onError([](ota_error_t error) {
+            LOG(WARNING, "[OTA] error %u", (unsigned)error);
+        });
+        ArduinoOTA.begin();
+        ota_started = true;
+        LOG(INFO, "[OTA] ready at %s:3232", WiFi.localIP().toString().c_str());
+    }
+    if (ota_started)
+    {
+        ArduinoOTA.handle();
+    }
+
     // Call the OpenMRN executor as often as possible from loop().
     openmrn.loop();
 }
