@@ -44,10 +44,18 @@ Mcp23017 g_mcp;
 /// ~/railpoint/railpoint/railpoint.ino). FY2 moved off D4/D5 (now the I2C
 /// SDA/SCL bus for the MCP23017) to the still-free D8/D9 pair -- update it
 /// here if FY2's DRV8871 is actually wired to different pins.
+/// Pre-sized to 8 points: FY1-FY3 native, FY4-FY8 on the MCP23017. Wiring
+/// FY4-FY8's DRV8871s later needs no firmware change beyond swapping their
+/// MCP output here -- the CDI already holds all 8 (no reformat on hardware add).
 static constexpr uint8_t POINT_PINS[openlcb::NUM_POINTS][2] = {
-    {D1, D3}, // FY1
-    {D8, D9}, // FY2
-    {D10, D0}, // FY3 (native pins; MCP23017 free for points 4+)
+    {D1, D3},         // FY1 native
+    {D8, D9},         // FY2 native
+    {D10, D0},        // FY3 native
+    {MCP(0), MCP(1)}, // FY4 MCP GPA0/GPA1
+    {MCP(2), MCP(3)}, // FY5 MCP GPA2/GPA3
+    {MCP(4), MCP(5)}, // FY6 MCP GPA4/GPA5
+    {MCP(6), MCP(7)}, // FY7 MCP GPA6/GPA7
+    {MCP(8), MCP(9)}, // FY8 MCP GPB0/GPB1
 };
 
 /// Node id for this node, unique on the network (Fleet #4).
@@ -258,7 +266,8 @@ private:
 };
 
 #define PCH(i) PointChannel(openmrn.stack()->node(), cfg.seg().turnouts().entry<i>(), i)
-PointChannel point_channels[] = { PCH(0), PCH(1), PCH(2) };
+PointChannel point_channels[] = {
+    PCH(0), PCH(1), PCH(2), PCH(3), PCH(4), PCH(5), PCH(6), PCH(7) };
 #undef PCH
 
 class FactoryResetHelper : public DefaultConfigUpdateListener

@@ -23,9 +23,12 @@ extern const SimpleNodeStaticValues SNIP_STATIC_DATA = {
 /// 0x1900 = Task 2: added PointConfig (2-entry RepeatedGroup) -- layout
 ///          change (new entries appended after the wifi group) -> bump.
 /// 0x1A00 = added 3rd point (FY3) -- grows the turnouts RepeatedGroup -> reformat.
-static constexpr uint16_t CANONICAL_VERSION = 0x1A00;
+/// 0x1B00 = pre-sized to 8 points (3 native + 5 MCP23017). Planned final size,
+///          so wiring points 4-8 later needs NO version bump and NO reformat --
+///          the CDI already holds all 8, they just start blank/at defaults.
+static constexpr uint16_t CANONICAL_VERSION = 0x1B00;
 
-constexpr uint8_t NUM_POINTS = 3;
+constexpr uint8_t NUM_POINTS = 8;
 
 /// One turnout/point: the OpenLCB event pair that commands it, plus the
 /// timing/orientation config the (not-yet-built) actuator will use. Task 2
