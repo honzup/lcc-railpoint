@@ -22,9 +22,10 @@ extern const SimpleNodeStaticValues SNIP_STATIC_DATA = {
 /// after an update.
 /// 0x1900 = Task 2: added PointConfig (2-entry RepeatedGroup) -- layout
 ///          change (new entries appended after the wifi group) -> bump.
-static constexpr uint16_t CANONICAL_VERSION = 0x1900;
+/// 0x1A00 = added 3rd point (FY3) -- grows the turnouts RepeatedGroup -> reformat.
+static constexpr uint16_t CANONICAL_VERSION = 0x1A00;
 
-constexpr uint8_t NUM_POINTS = 2;
+constexpr uint8_t NUM_POINTS = 3;
 
 /// One turnout/point: the OpenLCB event pair that commands it, plus the
 /// timing/orientation config the (not-yet-built) actuator will use. Task 2

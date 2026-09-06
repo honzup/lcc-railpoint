@@ -16,6 +16,7 @@
 #include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <SPIFFS.h>
+#include <Wire.h> // I2C for the MCP23017 GPIO expander (extra point pins)
 #include <WiFi.h>
 #include <WiFiManager.h> // tzapu/WiFiManager -- captive-portal provisioning
 #include <esp_netif.h>
@@ -31,14 +32,22 @@
 #include "config.h"
 #include "drv8871.h"
 
-/// Per-point DRV8871 IN1/IN2 pins (XIAO-S3 Arduino pin macros). FY1 on
-/// D1/D3 matches the proven MQTT railpoint's wiring (see
-/// ~/railpoint/railpoint/railpoint.ino). FY2's D4/D5 is a clean, unused
-/// XIAO-S3 pair chosen as a default -- it MUST be updated here if FY2's
-/// DRV8871 is actually wired to different pins.
+/// MCP23017 GPIO expander (I2C @0x20): lets a point's DRV8871 IN1/IN2 live on
+/// its 16 outputs instead of a native GPIO, so more points fit on this one
+/// board once the XIAO-S3's native pins run out. Declared here, begin()'d in
+/// setup() before any point drives. drv8871.h references it as `extern`.
+Mcp23017 g_mcp;
+
+/// Per-point DRV8871 IN1/IN2 pins. A value < 100 is a native XIAO-S3 GPIO
+/// (Arduino pin macro); MCP(n) is MCP23017 output n (0-15) -- see drv8871.h.
+/// FY1 on D1/D3 matches the proven MQTT railpoint's wiring (see
+/// ~/railpoint/railpoint/railpoint.ino). FY2 moved off D4/D5 (now the I2C
+/// SDA/SCL bus for the MCP23017) to the still-free D8/D9 pair -- update it
+/// here if FY2's DRV8871 is actually wired to different pins.
 static constexpr uint8_t POINT_PINS[openlcb::NUM_POINTS][2] = {
     {D1, D3}, // FY1
-    {D4, D5}, // FY2
+    {D8, D9}, // FY2
+    {D10, D0}, // FY3 (native pins; MCP23017 free for points 4+)
 };
 
 /// Node id for this node, unique on the network (Fleet #4).
@@ -249,7 +258,7 @@ private:
 };
 
 #define PCH(i) PointChannel(openmrn.stack()->node(), cfg.seg().turnouts().entry<i>(), i)
-PointChannel point_channels[] = { PCH(0), PCH(1) };
+PointChannel point_channels[] = { PCH(0), PCH(1), PCH(2) };
 #undef PCH
 
 class FactoryResetHelper : public DefaultConfigUpdateListener
@@ -321,6 +330,22 @@ void setup()
     Serial.begin(115200L);
     Esp32SocInfo::print_soc_info();
     LOG(INFO, "[Node] ID: %s", uint64_to_string_hex(NODE_ID).c_str());
+
+    // ---- I2C + MCP23017 GPIO expander ----------------------------------
+    // Brought up before any point channel drives (points drive from loop(),
+    // never setup()). SDA/SCL are the XIAO-S3 defaults (D4/D5), which is why
+    // FY2 was moved off that pair. g_mcp.begin() sets all 16 pins as outputs
+    // latched low, so an MCP-backed point starts coasting like a native one.
+    // This node has no web server, so the serial scan below is the only
+    // "is the MCP alive?" diagnostic -- expect "found 0x20".
+    Wire.begin(SDA, SCL);
+    g_mcp.begin(0x20);
+    for (uint8_t a = 1; a < 128; a++)
+    {
+        Wire.beginTransmission(a);
+        if (Wire.endTransmission() == 0)
+            LOG(INFO, "[i2c] found 0x%02x", a);
+    }
 
     // ---- WiFi provisioning: tzapu captive portal ----------------------
     // Runs before Esp32WiFiManager touches the WiFi driver at all. tzapu's
