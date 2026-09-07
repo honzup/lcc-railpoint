@@ -37,8 +37,9 @@
 /// XIAO-S3 pair chosen as a default -- it MUST be updated here if FY2's
 /// DRV8871 is actually wired to different pins.
 static constexpr uint8_t POINT_PINS[openlcb::NUM_POINTS][2] = {
-    {D1, D3}, // FY1
-    {D4, D5}, // FY2
+    {D1, D3},  // FY1 native
+    {D8, D9},  // FY2 native
+    {D10, D0}, // FY3 native
 };
 
 /// Node id for this node, unique on the network (Fleet #4).
@@ -249,7 +250,7 @@ private:
 };
 
 #define PCH(i) PointChannel(openmrn.stack()->node(), cfg.seg().turnouts().entry<i>(), i)
-PointChannel point_channels[] = { PCH(0), PCH(1) };
+PointChannel point_channels[] = { PCH(0), PCH(1), PCH(2) };
 #undef PCH
 
 class FactoryResetHelper : public DefaultConfigUpdateListener
@@ -319,6 +320,14 @@ public:
 void setup()
 {
     Serial.begin(115200L);
+
+    // Drive every DRV8871 input low now -- before the multi-second WiFi
+    // provisioning -- so the pins are never floating during boot (a floating
+    // input can drive the motor and twitch the point on reset). update()
+    // also inits them lazily, but only once loop() starts, far too late.
+    for (uint8_t i = 0; i < openlcb::NUM_POINTS; ++i)
+        drv8871_init(POINT_PINS[i][0], POINT_PINS[i][1]);
+
     Esp32SocInfo::print_soc_info();
     LOG(INFO, "[Node] ID: %s", uint64_to_string_hex(NODE_ID).c_str());
 
