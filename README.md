@@ -11,8 +11,32 @@ firmware, on the same **XIAO ESP32-S3** hardware.
 - Each point = a JMRI OpenLCB **Turnout**; a command pulses the DRV8871 for `throwMs`
   then coasts (the MP1 end-stop cuts current). **Frog polarity is switched by the
   MP1's own aux SPDT contact** — no GPIO/relay.
-- Scope: **FY1 (D1/D3) + FY2** now; array expandable. MCP23017 GPIO expander is a
-  later addition.
+- Points: **8 total** — FY1–FY3 on native GPIO, FY4–FY8 on an **MCP23017** I²C
+  expander (`0x20`). `NUM_POINTS` is pre-sized to 8, so wiring the MCP-backed points
+  later is hardware-only (no `CANONICAL_VERSION` bump, no CDI reformat). See [Pin map](#pin-map).
+
+## Pin map
+
+MP1 point → DRV8871 inputs (`src/main.cpp` `POINT_PINS`). Per point: one DRV8871 —
+COM→+12 V, OUT1/OUT2→POZ1/POZ2, aux→frog. Event pairs are derived from the node ID
+(closed = even, thrown = odd); JMRI systemName is `M2T03.04.00.1E.48.04.00.0X;…0Y`.
+
+| Point | IN1 | IN2 | On | Event pair (`…48.04.00._`) |
+|-------|-----|-----|----|----------------------------|
+| FY1 | D1 (GPIO2)  | D3 (GPIO4) | native      | `00 ; 01` |
+| FY2 | D8 (GPIO7)  | D9 (GPIO8) | native      | `02 ; 03` |
+| FY3 | D10 (GPIO9) | D0 (GPIO1) | native      | `04 ; 05` |
+| FY4 | GPA0 (DIP 21) | GPA1 (DIP 22) | MCP23017 | `06 ; 07` |
+| FY5 | GPA2 (DIP 23) | GPA3 (DIP 24) | MCP23017 | `08 ; 09` |
+| FY6 | GPA4 (DIP 25) | GPA5 (DIP 26) | MCP23017 | `0A ; 0B` |
+| FY7 | GPA6 (DIP 27) | GPA7 (DIP 28) | MCP23017 | `0C ; 0D` |
+| FY8 | GPB0 (DIP 1)  | GPB1 (DIP 2)  | MCP23017 | `0E ; 0F` |
+
+**I²C bus:** SDA = D4 (GPIO5), SCL = D5 (GPIO6). MCP23017 module: VCC→3.3 V, GND→GND,
+A0–A2→GND (address `0x20`), /RESET pulled high on-board. The module's on-board 10 kΩ
+SDA/SCL pull-ups suffice — don't add more. GPB2–GPB7 are spare (3 more points if
+`NUM_POINTS` is raised). Spare native pins: D2 (GPIO3, strapping — avoid), D6/D7
+(GPIO43/44, UART).
 
 Design spec: [`docs/superpowers/specs/2026-09-02-lcc-railpoint-design.md`](docs/superpowers/specs/2026-09-02-lcc-railpoint-design.md)
 

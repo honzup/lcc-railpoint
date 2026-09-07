@@ -356,6 +356,16 @@ void setup()
             LOG(INFO, "[i2c] found 0x%02x", a);
     }
 
+    // ---- Point pins LOW *now*, before the multi-second WiFi provisioning ---
+    // The ESP32-S3 powers up with these as floating high-Z inputs, and a
+    // floating DRV8871 input can drive the H-bridge -- twitching/moving the
+    // point for the whole boot window. update()'s lazy drv8871_init only runs
+    // once loop() starts (after all of setup()), which is far too late: any
+    // reset or wire reconnect moves the point unexpectedly until then. MCP is
+    // already begin()'d above, so MCP-backed points are safe to init here too.
+    for (uint8_t i = 0; i < openlcb::NUM_POINTS; ++i)
+        drv8871_init(POINT_PINS[i][0], POINT_PINS[i][1]);
+
     // ---- WiFi provisioning: tzapu captive portal ----------------------
     // Runs before Esp32WiFiManager touches the WiFi driver at all. tzapu's
     // autoConnect() uses arduino-esp32's own WiFi stack to either join
