@@ -11,15 +11,18 @@ firmware, on the same **XIAO ESP32-S3** hardware.
 - Each point = a JMRI OpenLCB **Turnout**; a command pulses the DRV8871 for `throwMs`
   then coasts (the MP1 end-stop cuts current). **Frog polarity is switched by the
   MP1's own aux SPDT contact** — no GPIO/relay.
-- Points: **8 total** — FY1–FY3 on native GPIO, FY4–FY8 on an **MCP23017** I²C
-  expander (`0x20`). `NUM_POINTS` is pre-sized to 8, so wiring the MCP-backed points
-  later is hardware-only (no `CANONICAL_VERSION` bump, no CDI reformat). See [Pin map](#pin-map).
+- Points: **4 built** (`NUM_POINTS = 4`) — FY1–FY3 on native GPIO + **FY4 on an
+  MCP23017** (`0x20`), all four verified on hardware and stable on the WiFi uplink.
+  The [Pin map](#pin-map) also lists FY5–FY8 (MCP), but growing to them enlarges the
+  CDI, which **destabilises the WiFi uplink** — so dense expansion waits for CAN
+  transport (parked on the `mcp-8point` branch). Native pins max out at ~4–5.
 
 ## Pin map
 
 MP1 point → DRV8871 inputs (`src/main.cpp` `POINT_PINS`). Per point: one DRV8871 —
 COM→+12 V, OUT1/OUT2→POZ1/POZ2, aux→frog. Event pairs are derived from the node ID
 (closed = even, thrown = odd); JMRI systemName is `M2T03.04.00.1E.48.04.00.0X;…0Y`.
+**FY1–FY4 are built and running; FY5–FY8 are the planned MCP expansion (need CAN).**
 
 | Point | IN1 | IN2 | On | Event pair (`…48.04.00._`) |
 |-------|-----|-----|----|----------------------------|
@@ -45,5 +48,7 @@ Toolchain: PlatformIO `espressif32@6.9.0` (arduino-esp32 2.x), **OpenMRNLite v2.
 download mode (hold BOOT, tap RESET, release BOOT); OTA after. XIAO-S3 needs its
 **u.FL antenna** attached.
 
-Status: **in development** (adapts fleet node #3's turnout pattern onto the validated
-WiFi-transport path).
+Status: **live** — 4 points running on layout node `.86` (FY1–FY3 native + FY4 on the
+MCP23017), stable on the WiFi uplink. `CANONICAL_VERSION 0x1E00`. Full 8-point / dense
+MCP expansion is parked on the `mcp-8point` branch, pending CAN transport (WiFi can't
+carry the bigger CDI reliably).
