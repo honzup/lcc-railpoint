@@ -52,6 +52,7 @@ static constexpr uint8_t POINT_PINS[openlcb::NUM_POINTS][2] = {
     {D8, D9},         // FY2 native
     {D10, D0},        // FY3 native
     {MCP(0), MCP(1)}, // FY4 MCP GPA0/GPA1
+    {MCP(2), MCP(3)}, // FY5 MCP GPA2/GPA3
 };
 
 /// Node id for this node, unique on the network (Fleet #4).
@@ -263,7 +264,7 @@ private:
 
 #define PCH(i) PointChannel(openmrn.stack()->node(), cfg.seg().turnouts().entry<i>(), i)
 PointChannel point_channels[] = {
-    PCH(0), PCH(1), PCH(2), PCH(3) };
+    PCH(0), PCH(1), PCH(2), PCH(3), PCH(4) };
 #undef PCH
 
 class FactoryResetHelper : public DefaultConfigUpdateListener

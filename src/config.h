@@ -27,9 +27,10 @@ extern const SimpleNodeStaticValues SNIP_STATIC_DATA = {
 ///          so wiring points 4-8 later needs NO version bump and NO reformat --
 ///          the CDI already holds all 8, they just start blank/at defaults.
 /// 0x1E00 = 4-point test: FY1/FY2/FY3 native + FY4 on MCP23017.
-static constexpr uint16_t CANONICAL_VERSION = 0x1E00;
+/// 0x1F00 = 5 points: FY1-3 native + FY4/FY5 on MCP23017 (GPA0/1, GPA2/3).
+static constexpr uint16_t CANONICAL_VERSION = 0x1F00;
 
-constexpr uint8_t NUM_POINTS = 4;
+constexpr uint8_t NUM_POINTS = 5;
 
 /// One turnout/point: the OpenLCB event pair that commands it, plus the
 /// timing/orientation config the (not-yet-built) actuator will use. Task 2
