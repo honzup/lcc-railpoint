@@ -1,6 +1,6 @@
 /// Copyright (c) 2026 John Holmes -- MIT licence (see LICENSE).
 /// Parts based on the ESP32IOBoard example from OpenMRNLite,
-/// Copyright (c) 2019 Mike Dunston -- BSD 2-Clause (full notice in LICENSE).
+/// Copyright (c) 2019 Mike Dunston -- BSD 2-Clause (full notice in THIRD_PARTY_NOTICES).
 ///
 /// LCC RailPoint -- WiFi-transport OpenLCB node for the Seeed XIAO ESP32-S3.
 /// Connects as a GridConnect-TCP uplink client to a JMRI OpenLCB hub (no CAN

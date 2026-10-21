@@ -130,4 +130,4 @@ worth knowing about if you start your own S3 project.
 ## Licence
 
 MIT – see `LICENSE`. Parts are based on the ESP32IOBoard example from
-OpenMRNLite by Mike Dunston (BSD 2-Clause; the notice is included in `LICENSE`).
+OpenMRNLite by Mike Dunston (BSD 2-Clause; see `THIRD_PARTY_NOTICES`).
