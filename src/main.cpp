@@ -1,4 +1,4 @@
-/// Copyright (c) 2026 John Holmes -- MIT licence (see LICENSE).
+/// Copyright (c) 2026 John Bell -- MIT licence (see LICENSE).
 /// Parts based on the ESP32IOBoard example from OpenMRNLite,
 /// Copyright (c) 2019 Mike Dunston -- BSD 2-Clause (full notice in THIRD_PARTY_NOTICES).
 ///
