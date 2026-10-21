@@ -112,8 +112,8 @@ worth knowing about if you start your own S3 project.
 
 ## Limits and findings
 
-- **Five points is the tested maximum on WiFi.** With 4 points (8 minutes) and
-  5 points (54 minutes) the node held one hub connection throughout. An 8-point build (more
+- **Five points is the tested maximum on WiFi.** The 5-point build has run on
+  my layout since September 2026 without dropping its hub connection. An 8-point build (more
   MCP23017 points, and so a larger configuration) made the node reconnect every
   few moves. I haven't proven why. That attempt is kept under the tag
   `mcp-8point`; on a CAN connection it may well be fine.
