@@ -87,11 +87,16 @@ Uses PlatformIO with `espressif32@6.9.0` (arduino-esp32 2.0.x) and
    out? Power-cycle to try again.)
 5. The node connects to the JMRI hub and appears in **OpenLCB → Open LccPro**
    (or **Configure Nodes**) as "LCC RailPoint".
-6. **Create the turnouts** in JMRI (Turnout table → Add, OpenLCB connection),
-   one per point, using that point's closed/thrown events from the CDI.
-   Defaults are derived from the node ID: point 1 = `…00` / `…01`, point 2 =
-   `…02` / `…03`, and so on.
-7. Adjust `throwMs`, Invert and descriptions per point in the CDI.
+6. **Create the turnouts** in JMRI, one per point. A JMRI OpenLCB turnout's
+   system name lists the **thrown** event first: `M2T<thrown event>;<closed event>`.
+   The default events come from the node ID: point 1 = `…00` closed / `…01`
+   thrown, point 2 = `…02` / `…03`, and so on – so point 1 is
+   `M2T<node id>.00.01;<node id>.00.00`. To check, open the point's tab in the
+   node configuration: under **Event Closed**, "Other uses of this Event ID"
+   should say *Turnout … Closed*.
+7. Adjust the throw time, Invert and description per point:
+
+   ![Point configuration in JMRI](images/cdi-point.png)
 
 **Later updates go over WiFi:**
 
