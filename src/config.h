@@ -14,7 +14,7 @@ namespace openlcb
 extern const SimpleNodeStaticValues SNIP_STATIC_DATA = {
     4,
     "OpenMRN",
-    "LCC RailPoint (Fleet #4)",
+    "LCC RailPoint",
     ARDUINO_VARIANT,
     "1.00"};
 

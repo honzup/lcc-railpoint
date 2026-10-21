@@ -1,17 +1,13 @@
-/// LCC RailPoint (Fleet #4) -- WiFi-transport OpenLCB node for the
-/// ESP32-S3 (XIAO S3). Connects as a GridConnect-TCP uplink client to the
-/// JMRI hub. No CAN/TWAI. Task 1 scope: WiFi provisioning + uplink join
-/// only. Task 2 scope: PointChannel consumers (2 points) -- thrown/closed
-/// events set commanded state and are LOGGED. Task 3 scope: each point
-/// drives its own DRV8871 H-bridge (see drv8871.h) for throwMs then
-/// coasts, per the proven MQTT railpoint's startThrow/coast logic.
+/// LCC RailPoint -- WiFi-transport OpenLCB node for the Seeed XIAO ESP32-S3.
+/// Connects as a GridConnect-TCP uplink client to a JMRI OpenLCB hub (no CAN
+/// hardware) and drives MTB MP1 point motors through DRV8871 H-bridges: each
+/// thrown/closed event pulses the motor for throwMs, then coasts.
 ///
 /// WiFi credentials are NOT hardcoded: a tzapu WiFiManager captive portal
 /// ("lcc-railpoint-Setup") provisions them on first boot / when unset, and
 /// OpenMRNLite's Esp32WiFiManager owns the connection from then on. See the
 /// "[prov] handing off" block in setup() for how the two libraries hand off
-/// the WiFi driver without fighting over it -- that handoff is the risk
-/// this task exists to de-risk.
+/// the WiFi driver without fighting over it.
 
 #include <Arduino.h>
 #include <ArduinoOTA.h>
@@ -55,8 +51,18 @@ static constexpr uint8_t POINT_PINS[openlcb::NUM_POINTS][2] = {
     {MCP(2), MCP(3)}, // FY5 MCP GPA2/GPA3
 };
 
-/// Node id for this node, unique on the network (Fleet #4).
+// ===================== SET THESE FOR YOUR LAYOUT =====================
+/// Node ID -- must be unique on your LCC network. Use an ID from your own
+/// range (MERG members: 03.04.00.<membership number in hex>.<nn>; otherwise
+/// request a free range from OpenLCB). This one is the author's.
 static constexpr uint64_t NODE_ID = UINT64_C(0x0304001E4804);
+
+/// JMRI OpenLCB hub the node connects to (JMRI: OpenLCB menu > Start Hub).
+/// Written as the factory default on first boot; afterwards it can be changed
+/// in the node's CDI (WiFi > Uplink) from JMRI.
+static constexpr const char *HUB_HOST = "192.168.1.46";
+static constexpr uint16_t HUB_PORT = 12021;
+// ======================================================================
 
 /// Primary entrypoint for the OpenMRN/LCC stack.
 OpenMRN openmrn(NODE_ID);
@@ -83,11 +89,11 @@ Esp32WiFiManager *wifi_mgr = nullptr;
 
 /// Last-commanded-position store (NVS), keyed per point ("t%d"). Opened in
 /// setup() before openmrn.begin() so it's ready when apply_configuration()
-/// restores on initial_load. Ported VERBATIM (pattern) from fleet node #3.
+/// restores on initial_load. Ported VERBATIM (pattern) from my LCC servo node.
 Preferences prefs;
 
 // ============ DURABLE config persistence: fsync-after-write (debounced) =======
-// Ported VERBATIM (pattern) from fleet node #3 (lcc-servo-node/src/main.cpp) --
+// Ported VERBATIM (pattern) from my LCC servo node --
 // see that file's header comment for the full root-cause writeup. Short
 // version: ESP32 SPIFFS keeps file writes in cache and only commits to flash
 // on fsync/close, so we fsync ONLY after a config WRITE (never a read),
@@ -102,7 +108,7 @@ static volatile uint32_t  s_cfg_dirty_ms = 0;
 /// One turnout/point: a config-driven consumer whose thrown/closed events
 /// set a commanded state, which drives a DRV8871 H-bridge (see drv8871.h)
 /// for throw_ms_ then coasts -- the MP1's own end-stop cuts motor current
-/// at travel end. Adapted from fleet node #3's TurnoutChannel, minus the
+/// at travel end. Adapted from my LCC servo node's TurnoutChannel, minus the
 /// PCA9685/MCP23017 servo+frog drive (frog here is mechanical, via the MP1
 /// aux SPDT -- no GPIO).
 class PointChannel : public DefaultConfigUpdateListener
@@ -122,7 +128,7 @@ public:
         BarrierNotifiable *done) override
     {
         AutoNotify n(done);
-        fd_ = fd; // retained for parity with node #3 (future save/calibration API)
+        fd_ = fd; // retained for parity with the servo node (future save/calibration API)
         throw_ms_ = cfg_.throwMs().read(fd);
         invert_ = cfg_.invert().read(fd) != 0;
         snprintf(name_, sizeof(name_), "%s", cfg_.description().read(fd).c_str());
@@ -133,7 +139,7 @@ public:
             // Reading NVS here (executor thread) is fine -- it's not GPIO;
             // the DRV8871 itself is only ever driven from update() below, via
             // restart_ (same rule as everything else in this class). Ported
-            // VERBATIM (pattern) from fleet node #3.
+            // VERBATIM (pattern) from my LCC servo node.
             char key[8];
             snprintf(key, sizeof(key), "t%d", idx_);
             commanded_thrown_ = prefs.getUChar(key, 0) != 0;
@@ -160,7 +166,7 @@ public:
         cfg_.description().write(fd, "");
     }
 
-    /// Loop-thread tick (called every ~30ms, same cadence as node #3's servo
+    /// Loop-thread tick (called every ~30ms, same cadence as the servo node's servo
     /// sweep). Drives the DRV8871 pulse for this point; all GPIO writes
     /// happen here, never on the executor/event-handler thread.
     void update(uint32_t now)
@@ -208,8 +214,8 @@ public:
     /// back through consumer_ -> GPIOBit::set_state -> CmdGpio ->
     /// commanded_thrown_, setting the state deterministically -- overriding
     /// the NVS-restored fallback with JMRI's definite state. Asynchronous:
-    /// `done` fires once the query is enqueued. Ported VERBATIM from fleet
-    /// node #3's TurnoutChannel::query_state.
+    /// `done` fires once the query is enqueued. Ported VERBATIM from my LCC servo
+    /// node's TurnoutChannel::query_state.
     void query_state(openlcb::WriteHelper *w, BarrierNotifiable *done)
     {
         if (impl_.event_on() == 0 && impl_.event_off() == 0) { done->notify(); return; }
@@ -254,7 +260,7 @@ private:
     volatile bool commanded_thrown_ = false; // written from executor (event handler)
     bool     persisted_thrown_ = false;      // last value written to NVS (loop-only)
     volatile bool restart_          = false; // intent changed, (re)start the drive pulse
-    int      fd_ = -1;                       // config fd, retained (parity w/ node #3)
+    int      fd_ = -1;                       // config fd, retained (parity w/ the servo node)
 
     // Loop-thread-only drive state (never touched off update()).
     bool     pins_ready_  = false; // drv8871_init() done (lazy -- global ctor runs pre-Arduino-init)
@@ -281,15 +287,15 @@ public:
     {
         cfg.userinfo().name().write(fd, openlcb::SNIP_STATIC_DATA.model_name);
         cfg.userinfo().description().write(
-            fd, "LCC RailPoint (Fleet #4) -- WiFi uplink to JMRI hub");
+            fd, "LCC RailPoint -- WiFi uplink to JMRI hub");
 
         // Pre-point the uplink at the JMRI hub so it connects with zero
-        // JMRI-side CDI editing: Manual Only, 192.168.1.46:12021.
+        // JMRI-side CDI editing: Manual Only, HUB_HOST:HUB_PORT.
         cfg.seg().wifi().uplink().search_mode().write(
             fd, 3 /* SocketClientParams::SearchMode::MANUAL_ONLY */);
         cfg.seg().wifi().uplink().manual_address().ip_address().write(
-            fd, "192.168.1.46");
-        cfg.seg().wifi().uplink().manual_address().port().write(fd, 12021);
+            fd, HUB_HOST);
+        cfg.seg().wifi().uplink().manual_address().port().write(fd, HUB_PORT);
     }
 } factory_reset_helper;
 
@@ -314,7 +320,7 @@ extern const char *const SNIP_DYNAMIC_FILENAME = CONFIG_FILENAME;
 
 /// Overrides the default SPACE_CONFIG memory space so every config WRITE
 /// (never a read) arms the debounced fsync above. Ported VERBATIM (pattern)
-/// from fleet node #3.
+/// from my LCC servo node.
 class SyncedFileMemorySpace : public openlcb::FileMemorySpace
 {
 public:
@@ -486,7 +492,7 @@ void setup()
 // PointChannel::query_state). SendQuery is async and a single WriteHelper can't
 // be reused concurrently, so the points are serialised: fire point i+1 only
 // after point i's query is enqueued. s_query_done (executor ctx) clears the
-// busy flag; loop() advances the index. Ported VERBATIM from fleet node #3.
+// busy flag; loop() advances the index. Ported VERBATIM from my LCC servo node.
 //
 // ProducerIdentified replies are best-effort -- on any given boot JMRI may not
 // answer one point in time, leaving that point at its NVS-restored position
@@ -581,7 +587,7 @@ void loop()
         }
     }
 
-    // Point-channel tick: every ~30ms (same cadence as node #3's servo
+    // Point-channel tick: every ~30ms (same cadence as the servo node's servo
     // sweep). Drives each point's DRV8871 pulse and coasts it after throwMs.
     static uint32_t s_last_tick = 0;
     uint32_t now = millis();
