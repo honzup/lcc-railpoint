@@ -110,10 +110,60 @@ trusted.
 
 ### OpenMRNLite 2.0.0 patch for the ESP32-S3
 
-OpenMRNLite 2.0.0 has a stray bracket in `Esp32Gpio.hxx` that breaks every
-ESP32-S3 build. `patch_openmrnlite.py` runs automatically before each build and
+OpenMRNLite 2.0.0 has a stray bracket in `Esp32Gpio.hxx` that breaks any
+ESP32-S3 build with octal PSRAM enabled (PlatformIO's XIAO board definition
+enables it). `patch_openmrnlite.py` runs automatically before each build and
 fixes the downloaded library in place, so nothing manual is needed – but it's
 worth knowing about if you start your own S3 project.
+
+### Building with the Arduino IDE instead
+
+The project is set up for PlatformIO, but builds in the Arduino IDE (or
+arduino-cli) too. The versions matter – **OpenMRNLite 2.0.0 needs the ESP32
+core 2.0.x**; OpenMRNLite 2.2.x needs core 3.x and won't build this sketch.
+
+1. **Boards Manager:** install **esp32 by Espressif, version 2.0.17** (not 3.x).
+2. **Library Manager:** install **OpenMRNLite, version 2.0.0** (pick it from the
+   version dropdown) and **WiFiManager by tzapu**. If 2.0.0 isn't offered,
+   download the zip from the
+   [OpenMRNLite v2.0.0 release](https://github.com/openmrn/OpenMRNLite/releases/tag/v2.0.0)
+   and use *Sketch → Include Library → Add .ZIP Library*.
+   The IDE has one shared libraries folder, so this sets OpenMRNLite 2.0.0 for
+   **every** sketch.
+3. **Switch the compiler to C++17.** The code needs it (PlatformIO sets it in
+   `platformio.ini`), but core 2.0.17 compiles with C++11 and fails with
+   "use of deleted function" errors. Create a file called `platform.local.txt`
+   next to the core's `platform.txt` – on Linux
+   `~/.arduino15/packages/esp32/hardware/esp32/2.0.17/`, on Windows
+   `%LOCALAPPDATA%\Arduino15\packages\esp32\hardware\esp32\2.0.17\`, on macOS
+   `~/Library/Arduino15/packages/esp32/hardware/esp32/2.0.17/` – containing
+   this one line, then restart the IDE:
+   ```
+   compiler.cpp.extra_flags=-std=gnu++17
+   ```
+   This applies to every sketch built with that core version.
+4. **Make a sketch folder:** create a folder called `lcc-railpoint`, copy
+   `src/main.cpp` into it renamed to **`lcc-railpoint.ino`**, and copy the other
+   files from `src/` (`config.h`, `drv8871.h`, `mcp23017.cpp`, `mcp23017.h`)
+   next to it.
+5. **Tools menu:** Board **XIAO_ESP32S3**, and leave **PSRAM: Disabled** (the
+   default – the node doesn't need it). The board's default 8 MB partition
+   layout works; there's no partition setting to change.
+   If you do enable **OPI PSRAM**, OpenMRNLite 2.0.0 fails to compile on a stray
+   bracket – see the patch section below and make the same one-character fix
+   by hand in your `libraries/OpenMRNLite/src/freertos_drivers/esp32/Esp32Gpio.hxx`.
+6. First upload in download mode (hold BOOT, tap RESET, release BOOT). With
+   arduino-cli you can pass the C++17 flag instead of step 3:
+   ```bash
+   arduino-cli compile -u -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3 \
+     --build-property "compiler.cpp.extra_flags=-std=gnu++17" lcc-railpoint
+   ```
+
+An Arduino IDE build uses a different flash layout from the PlatformIO build, so
+moving a node from one to the other wipes its stored configuration – re-enter it
+in JMRI afterwards.
+
+Tested with arduino-cli: esp32 core 2.0.17, OpenMRNLite 2.0.0, WiFiManager 2.0.17.
 
 ## Limits and findings
 
